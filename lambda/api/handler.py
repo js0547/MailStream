@@ -16,14 +16,23 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 import boto3
+from botocore.config import Config
 
 UPLOAD_BUCKET = os.environ["UPLOAD_BUCKET"]
 TABLE_NAME = os.environ["TABLE_NAME"]
 SENDER_EMAIL = os.environ["SENDER_EMAIL"]
+REGION = os.environ["AWS_REGION"]  # set automatically by Lambda
 URL_EXPIRY_SECONDS = 300
 MAX_TEMPLATE_BYTES = 200_000
 
-s3 = boto3.client("s3")
+# Use the regional endpoint so pre-signed URLs don't hit the global endpoint
+# and get a 307 redirect (browsers fail the CORS check on that redirect).
+s3 = boto3.client(
+    "s3",
+    region_name=REGION,
+    endpoint_url=f"https://s3.{REGION}.amazonaws.com",
+    config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}),
+)
 ses = boto3.client("sesv2")
 table = boto3.resource("dynamodb").Table(TABLE_NAME)
 
