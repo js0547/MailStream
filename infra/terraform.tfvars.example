@@ -1,0 +1,7 @@
+# Copy to terraform.tfvars and fill in your own values.
+# terraform.tfvars is git-ignored so your addresses stay out of the repo.
+
+aws_region      = "eu-north-1"
+sender_email    = "you@example.com"
+test_recipients = ["friend@example.com"]
+alert_email     = "you@example.com"
