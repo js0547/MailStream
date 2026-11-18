@@ -9,6 +9,18 @@ It's inspired by [MailMatrix (AWS-Project-04)](https://github.com/NotHarshhaa/AW
 redesigned with a web UI, campaign tracking, least-privilege IAM and full
 infrastructure-as-code. Everything runs inside the AWS Free Tier.
 
+### Features
+
+- **Personalised bulk email:** any CSV column becomes a `{{placeholder}}` in the HTML template.
+- **Attachments:** attach up to 5 PDF/PNG/JPG files (7 MB total).
+  - **Same files for everyone:** every recipient gets every attached file.
+  - **One file per person:** add an `attachment` column and each recipient gets
+    only the file named in their row, for example individual offer letters.
+- **Analytics:** delivery rate, per-campaign sent/failed/skipped bars, an
+  emails-per-day chart for the last 14 days, and a table view of the same data.
+- **Live campaign tracking:** progress bar and a result for every recipient.
+- **Monitoring:** CloudWatch alarms send an email through SNS on Lambda errors or failed sends.
+
 ---
 
 ## Architecture
@@ -36,14 +48,16 @@ flowchart LR
 2. **Create campaign:** the UI calls `POST /campaigns` on API Gateway. The API
    Lambda saves the HTML template to S3 and creates a DynamoDB record with
    status `AWAITING_UPLOAD`. It then returns a **pre-signed S3 URL**, valid for 5 minutes.
-3. **Upload:** the browser uploads `recipients.csv` straight to S3 with that URL.
-   No AWS keys are ever in the browser.
+3. **Upload:** the browser uploads any attachments, then `recipients.csv`,
+   straight to S3 with those URLs. No AWS keys are ever in the browser.
+   Attachments go first because the CSV upload is what starts sending.
 4. **Event trigger:** S3 fires an `ObjectCreated` event (filtered to
    `campaigns/*/recipients.csv`) that invokes the **Sender Lambda**.
 5. **Send:** the Lambda parses the CSV, validates and de-duplicates the
    addresses, and renders the template per recipient (`{{name}}`, `{{email}}`
    or any CSV column). It sends each email through **Amazon SES** (HTML plus a
-   plain-text fallback), rate-limited to the account's SES send rate.
+   plain-text fallback), rate-limited to the account's SES send rate. Emails
+   with attachments are built as MIME messages and sent as raw email.
 6. **Track:** progress and per-recipient results are written to **DynamoDB**.
    The dashboard polls `GET /campaigns` and shows live progress.
 7. **Monitor:** logs go to **CloudWatch**. Alarms on Lambda errors and on
@@ -60,7 +74,7 @@ flowchart LR
 | **Amazon DynamoDB** | Campaign history, counters and per-recipient delivery results. |
 | **Amazon CloudWatch** | Logs (14-day retention), a metric filter for failed sends, and alarms. |
 | **Amazon SNS** | Emails the admin when an alarm fires. |
-| **AWS IAM** | A separate least-privilege role per Lambda. The sender can only send `From` the verified sender address. |
+| **AWS IAM** | A separate least-privilege role per Lambda. The sender can only send (`SendEmail`/`SendRawEmail`) `From` the verified sender address. |
 | **Terraform** | Infrastructure as code: one command creates or destroys the whole stack. |
 
 ### Design decisions
@@ -135,7 +149,17 @@ After the first deploy:
 2. Drop in a CSV. It needs an `email` column, and every other column becomes a
    placeholder (see [`samples/recipients.csv`](samples/recipients.csv)).
 3. Pick a starter template or edit the HTML, and check the live preview.
-4. Click **Send**. Watch the progress bar, then open the campaign to see each recipient's result.
+4. Optionally add attachments. For one file per person, see
+   [`samples/recipients-with-attachments.csv`](samples/recipients-with-attachments.csv):
+   ```csv
+   email,name,status,attachment
+   alex@example.com,Alex,Selected,Offer_Letter_Alex.pdf
+   priya@example.com,Priya,Selected,Offer_Letter_Priya.pdf
+   ```
+   Separate several files in one cell with `;`. File names are matched after
+   spaces and special characters are replaced with `_`.
+5. Click **Send**. Watch the progress bar, then open the campaign to see each
+   recipient's result. The **Analytics** section updates automatically.
 
 ### Tear down
 ```bash
@@ -154,6 +178,7 @@ After the first deploy:
   front of it for HTTPS.
 - **No login:** the dashboard has no authentication. It's meant for demos. Add
   Amazon Cognito before using it for anything real.
+- Attachments: PDF, PNG and JPG only, at most 5 files and 7 MB in total (SES messages are limited to 10 MB after encoding).
 - One campaign is capped at 500 recipients (`max_recipients_per_campaign`). The
   sender Lambda's 15-minute limit allows about 800 emails at the sandbox rate.
 

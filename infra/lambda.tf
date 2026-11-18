@@ -120,8 +120,9 @@ data "aws_iam_policy_document" "sender" {
     resources = [aws_dynamodb_table.campaigns.arn]
   }
   statement {
-    sid     = "SendFromVerifiedSenderOnly"
-    actions = ["ses:SendEmail"]
+    sid = "SendFromVerifiedSenderOnly"
+    # SendRawEmail is needed for messages with attachments (raw MIME content).
+    actions = ["ses:SendEmail", "ses:SendRawEmail"]
     # In the sandbox SES also checks the recipient identities, so allow sending
     # from the sender identity to any identity in this account and region.
     resources = [

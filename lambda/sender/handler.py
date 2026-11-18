@@ -6,6 +6,12 @@ through Amazon SES and records the results in DynamoDB.
 
 CSV format: a header row with at least an `email` column. Every other column
 (name, company, ...) can be used in the template as {{column_name}}.
+
+Attachments (optional, uploaded with the campaign):
+  * no `attachment` column  -> every recipient gets every uploaded file
+  * `attachment` column     -> each recipient gets only the file(s) named in
+                               that cell (separate several with ';'), e.g.
+                               personalised offer letters
 """
 
 import csv
@@ -16,6 +22,11 @@ import re
 import time
 import urllib.parse
 from datetime import datetime, timezone
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.header import Header
+from email.utils import formataddr
 
 import boto3
 from botocore.exceptions import ClientError
@@ -29,6 +40,7 @@ MAX_STORED_RESULTS = 500
 EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 PLACEHOLDER_RE = re.compile(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}")
 TAG_RE = re.compile(r"<[^>]+>")
+SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 s3 = boto3.client("s3")
 ses = boto3.client("sesv2")
@@ -88,22 +100,48 @@ def read_recipients(bucket, key):
     return rows
 
 
-def send_one(to_address, subject, body_html):
+def build_content(to_address, subject, body_html, attachments):
+    """SES content: a simple message, or a raw MIME message with attachments."""
+    text = html_to_text(body_html)
+    if not attachments:
+        return {
+            "Simple": {
+                "Subject": {"Data": subject, "Charset": "UTF-8"},
+                "Body": {
+                    "Html": {"Data": body_html, "Charset": "UTF-8"},
+                    "Text": {"Data": text, "Charset": "UTF-8"},
+                },
+            }
+        }
+
+    msg = MIMEMultipart("mixed")
+    msg["Subject"] = str(Header(subject, "utf-8"))
+    msg["From"] = formataddr(("MailStream", SENDER_EMAIL))
+    msg["To"] = to_address
+
+    body = MIMEMultipart("alternative")
+    body.attach(MIMEText(text, "plain", "utf-8"))
+    body.attach(MIMEText(body_html, "html", "utf-8"))
+    msg.attach(body)
+
+    for att in attachments:
+        part = MIMEApplication(att["data"], _subtype=att["content_type"].split("/")[1])
+        part.replace_header("Content-Type", f'{att["content_type"]}; name="{att["name"]}"')
+        part.add_header("Content-Disposition", "attachment", filename=att["name"])
+        msg.attach(part)
+
+    return {"Raw": {"Data": msg.as_bytes()}}
+
+
+def send_one(to_address, subject, body_html, attachments=()):
     """Send one email, retrying a few times if SES throttles us."""
+    content = build_content(to_address, subject, body_html, attachments)
     for attempt in range(4):
         try:
             ses.send_email(
                 FromEmailAddress=SENDER_EMAIL,
                 Destination={"ToAddresses": [to_address]},
-                Content={
-                    "Simple": {
-                        "Subject": {"Data": subject, "Charset": "UTF-8"},
-                        "Body": {
-                            "Html": {"Data": body_html, "Charset": "UTF-8"},
-                            "Text": {"Data": html_to_text(body_html), "Charset": "UTF-8"},
-                        },
-                    }
-                },
+                Content=content,
             )
             return None
         except ClientError as exc:
@@ -113,6 +151,43 @@ def send_one(to_address, subject, body_html):
                 continue
             return f"{code}: {exc.response['Error'].get('Message', '')}"
     return "Throttled by SES"
+
+
+def load_attachments(bucket, campaign_id, meta):
+    """Download the campaign's attachments once. Returns {lowercase name: file}."""
+    files = {}
+    for item in meta or []:
+        obj_key = f"campaigns/{campaign_id}/attachments/{item['name']}"
+        try:
+            data = s3.get_object(Bucket=bucket, Key=obj_key)["Body"].read()
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] in ("NoSuchKey", "404"):
+                raise ValueError(f"Attachment '{item['name']}' was not uploaded")
+            raise
+        files[item["name"].lower()] = {
+            "name": item["name"],
+            "content_type": item["content_type"],
+            "data": data,
+        }
+    return files
+
+
+def attachments_for(row, files, per_recipient):
+    """Pick the files for one recipient. Returns (list, error)."""
+    if not files:
+        return [], None
+    if not per_recipient:
+        return list(files.values()), None
+    wanted = [n.strip() for n in row.get("attachment", "").split(";") if n.strip()]
+    chosen = []
+    for name in wanted:
+        # Same sanitising the API applies to uploaded file names.
+        safe = SAFE_NAME_RE.sub("_", os.path.basename(name.replace("\\", "/")))[:100]
+        match = files.get(safe.lower())
+        if not match:
+            return None, f"Attachment '{name}' was not uploaded with this campaign"
+        chosen.append(match)
+    return chosen, None
 
 
 def process(bucket, key):
@@ -128,11 +203,13 @@ def process(bucket, key):
 
     try:
         rows = read_recipients(bucket, key)
+        files = load_attachments(bucket, campaign_id, campaign.get("attachments"))
     except ValueError as exc:
         update_campaign(campaign_id, status="FAILED", error=str(exc))
         print(f"Campaign {campaign_id} rejected: {exc}")
         return
 
+    per_recipient = bool(files) and any("attachment" in row for row in rows)
     rows = rows[:MAX_RECIPIENTS]
     update_campaign(campaign_id, status="SENDING", total=len(rows), started_at=now())
 
@@ -148,19 +225,26 @@ def process(bucket, key):
             skipped += 1
             results.append({"email": email, "status": "SKIPPED", "detail": "Invalid email address"})
         else:
-            started = time.monotonic()
-            subject = render(campaign["subject"], row, escape=False)
-            error = send_one(email, subject, render(template, row, escape=True))
+            chosen, error = attachments_for(row, files, per_recipient)
             if error:
                 failed += 1
                 results.append({"email": email, "status": "FAILED", "detail": error})
                 print(f"FAILED {email}: {error}")
             else:
-                sent += 1
-                results.append({"email": email, "status": "SENT", "detail": ""})
-            wait = interval - (time.monotonic() - started)
-            if wait > 0:
-                time.sleep(wait)
+                started = time.monotonic()
+                subject = render(campaign["subject"], row, escape=False)
+                error = send_one(email, subject, render(template, row, escape=True), chosen)
+                if error:
+                    failed += 1
+                    results.append({"email": email, "status": "FAILED", "detail": error})
+                    print(f"FAILED {email}: {error}")
+                else:
+                    sent += 1
+                    detail = ", ".join(a["name"] for a in chosen)
+                    results.append({"email": email, "status": "SENT", "detail": f"Attached: {detail}" if detail else ""})
+                wait = interval - (time.monotonic() - started)
+                if wait > 0:
+                    time.sleep(wait)
 
         if index % PROGRESS_EVERY == 0:
             update_campaign(campaign_id, sent=sent, failed=failed, skipped=skipped)

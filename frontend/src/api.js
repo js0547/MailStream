@@ -21,22 +21,34 @@ export const getConfig = () => request("/config");
 export const listCampaigns = () => request("/campaigns").then((d) => d.campaigns);
 export const getCampaign = (id) => request(`/campaigns/${id}`);
 
+async function putToS3(url, file, contentType, label) {
+  const res = await fetch(url, { method: "PUT", headers: { "Content-Type": contentType }, body: file });
+  if (!res.ok) throw new Error(`Upload of ${label} to S3 failed (${res.status})`);
+}
+
 /**
- * Two-step send: the API creates the campaign and returns a pre-signed S3
- * URL; the browser then uploads the CSV straight to S3, and that upload is
- * what triggers the sender Lambda.
+ * The API creates the campaign and returns pre-signed S3 URLs. The browser
+ * uploads any attachments first, then the CSV: the CSV upload is what
+ * triggers the sender Lambda, so the files must already be in S3 by then.
  */
-export async function createAndUpload({ name, subject, template, csvFile }) {
-  const { campaign_id, upload_url } = await request("/campaigns", {
+export async function createAndUpload({ name, subject, template, csvFile, attachments = [] }, onProgress = () => {}) {
+  const res = await request("/campaigns", {
     method: "POST",
-    body: JSON.stringify({ name, subject, template }),
+    body: JSON.stringify({
+      name,
+      subject,
+      template,
+      attachments: attachments.map((f) => ({ name: f.name, size: f.size })),
+    }),
   });
 
-  const put = await fetch(upload_url, {
-    method: "PUT",
-    headers: { "Content-Type": "text/csv" },
-    body: csvFile,
-  });
-  if (!put.ok) throw new Error(`CSV upload to S3 failed (${put.status})`);
-  return campaign_id;
+  for (let i = 0; i < res.attachments.length; i++) {
+    const meta = res.attachments[i];
+    onProgress(`Uploading attachment ${i + 1} of ${res.attachments.length}...`);
+    await putToS3(meta.upload_url, attachments[i], meta.content_type, attachments[i].name);
+  }
+
+  onProgress("Uploading recipients...");
+  await putToS3(res.upload_url, csvFile, "text/csv", "the CSV");
+  return res.campaign_id;
 }

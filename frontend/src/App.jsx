@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getConfig, listCampaigns } from "./api.js";
 import CampaignForm from "./CampaignForm.jsx";
 import CampaignHistory from "./CampaignHistory.jsx";
+import Analytics from "./Analytics.jsx";
 
 const ACTIVE = new Set(["AWAITING_UPLOAD", "SENDING"]);
 
@@ -100,8 +101,10 @@ export default function App() {
         />
       </main>
 
+      <Analytics campaigns={campaigns} />
+
       <footer className="footer">
-        S3, Lambda, API Gateway, SES, DynamoDB, CloudWatch, SNS and CloudFront, deployed with Terraform
+        S3, Lambda, API Gateway, SES, DynamoDB, CloudWatch and SNS, deployed with Terraform
       </footer>
     </div>
   );

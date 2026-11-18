@@ -11,6 +11,7 @@ Sits behind API Gateway (HTTP API) and serves the dashboard:
 
 import json
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -24,6 +25,18 @@ SENDER_EMAIL = os.environ["SENDER_EMAIL"]
 REGION = os.environ["AWS_REGION"]  # set automatically by Lambda
 URL_EXPIRY_SECONDS = 300
 MAX_TEMPLATE_BYTES = 200_000
+
+# SES rejects messages over 10 MB. Attachments are base64-encoded (~1.37x),
+# so cap the raw total at 7 MB to leave room for the HTML body and headers.
+MAX_ATTACHMENTS = 5
+MAX_ATTACHMENT_TOTAL_BYTES = 7 * 1024 * 1024
+ATTACHMENT_TYPES = {
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+}
+SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 # Use the regional endpoint so pre-signed URLs don't hit the global endpoint
 # and get a 307 redirect (browsers fail the CORS check on that redirect).
@@ -68,6 +81,10 @@ def create_campaign(event):
     if len(template.encode("utf-8")) > MAX_TEMPLATE_BYTES:
         return respond(400, {"error": "template is larger than 200 KB"})
 
+    attachments, error = validate_attachments(body.get("attachments") or [])
+    if error:
+        return respond(400, {"error": error})
+
     campaign_id = uuid.uuid4().hex[:12]
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -90,22 +107,67 @@ def create_campaign(event):
             "sent": 0,
             "failed": 0,
             "skipped": 0,
+            "attachments": attachments,
         }
     )
 
-    # The CSV key ends in recipients.csv; the S3 notification on that suffix
-    # is what starts the sender Lambda.
-    upload_url = s3.generate_presigned_url(
-        "put_object",
-        Params={
-            "Bucket": UPLOAD_BUCKET,
-            "Key": f"campaigns/{campaign_id}/recipients.csv",
-            "ContentType": "text/csv",
+    # Attachments must be uploaded before the CSV: the CSV upload is what
+    # triggers sending (S3 notification on the recipients.csv suffix).
+    attachment_urls = [
+        {
+            "name": a["name"],
+            "upload_url": presign(f"campaigns/{campaign_id}/attachments/{a['name']}", a["content_type"]),
+            "content_type": a["content_type"],
+        }
+        for a in attachments
+    ]
+
+    return respond(
+        201,
+        {
+            "campaign_id": campaign_id,
+            "upload_url": presign(f"campaigns/{campaign_id}/recipients.csv", "text/csv"),
+            "attachments": attachment_urls,
         },
+    )
+
+
+def presign(key, content_type):
+    return s3.generate_presigned_url(
+        "put_object",
+        Params={"Bucket": UPLOAD_BUCKET, "Key": key, "ContentType": content_type},
         ExpiresIn=URL_EXPIRY_SECONDS,
     )
 
-    return respond(201, {"campaign_id": campaign_id, "upload_url": upload_url})
+
+def validate_attachments(items):
+    """Check the attachment list sent by the UI. Returns (clean_list, error)."""
+    if not isinstance(items, list):
+        return None, "attachments must be a list"
+    if len(items) > MAX_ATTACHMENTS:
+        return None, f"at most {MAX_ATTACHMENTS} attachments are allowed"
+
+    clean, names, total = [], set(), 0
+    for item in items:
+        if not isinstance(item, dict):
+            return None, "invalid attachment entry"
+        raw_name = str(item.get("name") or "").strip()
+        name = SAFE_NAME_RE.sub("_", os.path.basename(raw_name))[:100]
+        ext = os.path.splitext(name)[1].lower()
+        if not name or ext not in ATTACHMENT_TYPES:
+            return None, f"'{raw_name}' is not allowed. Use PDF, PNG or JPG files."
+        if name.lower() in names:
+            return None, f"duplicate attachment name '{name}'"
+        size = item.get("size")
+        if not isinstance(size, int) or size <= 0:
+            return None, f"'{raw_name}' has an invalid size"
+        total += size
+        names.add(name.lower())
+        clean.append({"name": name, "size": size, "content_type": ATTACHMENT_TYPES[ext]})
+
+    if total > MAX_ATTACHMENT_TOTAL_BYTES:
+        return None, "attachments must be 7 MB or smaller in total"
+    return clean, None
 
 
 def list_campaigns():
