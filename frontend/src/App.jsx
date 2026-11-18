@@ -6,13 +6,47 @@ import Analytics from "./Analytics.jsx";
 
 const ACTIVE = new Set(["AWAITING_UPLOAD", "SENDING"]);
 
+// Each tab has its own URL hash, so tabs can be bookmarked, opened in a new
+// window, and navigated with the browser's back button.
+const TABS = [
+  { id: "new", label: "New campaign" },
+  { id: "history", label: "History" },
+  { id: "analytics", label: "Analytics" },
+];
+const tabFromHash = () => {
+  const id = window.location.hash.replace(/^#\/?/, "");
+  return TABS.some((t) => t.id === id) ? id : "new";
+};
+
 export default function App() {
   const [config, setConfig] = useState(null);
   const [campaigns, setCampaigns] = useState([]);
   const [loadError, setLoadError] = useState("");
   const [loading, setLoading] = useState(true);
   const [highlight, setHighlight] = useState(null);
+  const [tab, setTab] = useState(tabFromHash);
   const timer = useRef(null);
+
+  useEffect(() => {
+    const onHash = () => setTab(tabFromHash());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
+  const go = (id) => {
+    if (id !== tab) window.location.hash = `/${id}`;
+    window.scrollTo({ top: 0 });
+  };
+
+  // Arrow keys move between tabs (standard tablist keyboard pattern).
+  const onTabKey = (e) => {
+    const i = TABS.findIndex((t) => t.id === tab);
+    const next = e.key === "ArrowRight" ? (i + 1) % TABS.length : e.key === "ArrowLeft" ? (i + TABS.length - 1) % TABS.length : -1;
+    if (next < 0) return;
+    e.preventDefault();
+    go(TABS[next].id);
+    document.getElementById(`tab-${TABS[next].id}`)?.focus();
+  };
 
   const refresh = useCallback(async () => {
     try {
@@ -42,10 +76,7 @@ export default function App() {
     return () => clearTimeout(timer.current);
   }, [campaigns, refresh]);
 
-  const totals = campaigns.reduce(
-    (acc, c) => ({ sent: acc.sent + (c.sent || 0), failed: acc.failed + (c.failed || 0) }),
-    { sent: 0, failed: 0 }
-  );
+  const activeCount = campaigns.filter((c) => ACTIVE.has(c.status)).length;
 
   return (
     <div className="app">
@@ -67,54 +98,84 @@ export default function App() {
             <span className="muted">
               {Math.round(config.sent_24h ?? 0)} / {Math.round(config.max_24h ?? 0)} sent today
             </span>
+            <span className="muted sender" title="Sender address">From {config.sender}</span>
           </div>
         )}
       </header>
 
-      <section className="stats" aria-label="Summary">
-        <Stat label="Campaigns" value={campaigns.length} />
-        <Stat label="Emails sent" value={totals.sent} />
-        <Stat label="Failed" value={totals.failed} tone={totals.failed ? "bad" : undefined} />
-        <Stat label="Sender" value={config?.sender ?? "..."} small />
-      </section>
+      <nav className="tabbar" role="tablist" aria-label="Sections" onKeyDown={onTabKey}>
+        {TABS.map((t) => (
+          <a
+            key={t.id}
+            id={`tab-${t.id}`}
+            href={`#/${t.id}`}
+            role="tab"
+            aria-selected={tab === t.id}
+            aria-controls={`panel-${t.id}`}
+            tabIndex={tab === t.id ? 0 : -1}
+            className={`tabbar-tab ${tab === t.id ? "on" : ""}`}
+            onClick={(e) => { e.preventDefault(); go(t.id); }}
+          >
+            {t.label}
+            {t.id === "history" && campaigns.length > 0 && (
+              <span className={`count ${activeCount ? "count-live" : ""}`}>
+                {activeCount ? `${activeCount} sending` : campaigns.length}
+              </span>
+            )}
+          </a>
+        ))}
+      </nav>
 
-      {config?.sandbox && (
-        <div className="notice">
-          Your SES account is in sandbox mode, so emails are delivered only to addresses verified in SES.
-          Unverified recipients show up as failed.
-        </div>
-      )}
+      <main id={`panel-${tab}`} role="tabpanel" aria-labelledby={`tab-${tab}`} className="panel">
+        {tab === "new" && (
+          <div className="narrow">
+            {config?.sandbox && (
+              <div className="notice">
+                Your SES account is in sandbox mode, so emails are delivered only to addresses verified in SES.
+                Unverified recipients show up as failed.
+              </div>
+            )}
+            <CampaignForm
+              onSent={async (id) => {
+                setHighlight(id);
+                await refresh();
+                go("history");
+              }}
+            />
+          </div>
+        )}
 
-      <main className="grid">
-        <CampaignForm
-          onSent={async (id) => {
-            setHighlight(id);
-            await refresh();
-          }}
-        />
-        <CampaignHistory
-          campaigns={campaigns}
-          loading={loading}
-          error={loadError}
-          highlight={highlight}
-          onRefresh={refresh}
-        />
+        {tab === "history" && (
+          <CampaignHistory
+            campaigns={campaigns}
+            loading={loading}
+            error={loadError}
+            highlight={highlight}
+            onRefresh={refresh}
+            onNew={() => go("new")}
+          />
+        )}
+
+        {tab === "analytics" && (
+          loading ? (
+            <section className="card"><p className="muted">Loading analytics...</p></section>
+          ) : campaigns.length ? (
+            <Analytics campaigns={campaigns} />
+          ) : (
+            <section className="card">
+              <div className="empty">
+                <strong>No data yet</strong>
+                <span className="muted">Send your first campaign and its results will show up here.</span>
+                <button type="button" className="ghost" onClick={() => go("new")}>Create a campaign</button>
+              </div>
+            </section>
+          )
+        )}
       </main>
-
-      <Analytics campaigns={campaigns} />
 
       <footer className="footer">
         S3, Lambda, API Gateway, SES, DynamoDB, CloudWatch and SNS, deployed with Terraform
       </footer>
-    </div>
-  );
-}
-
-function Stat({ label, value, tone, small }) {
-  return (
-    <div className="stat">
-      <span className="stat-label">{label}</span>
-      <span className={`stat-value ${small ? "stat-small" : ""} ${tone === "bad" ? "text-bad" : ""}`}>{value}</span>
     </div>
   );
 }

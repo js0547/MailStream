@@ -1,4 +1,18 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+
+// Measure a chart's real pixel width so the SVG is drawn 1:1 and its text
+// stays the same size on a phone and on a wide screen.
+function useWidth(fallback = 360) {
+  const ref = useRef(null);
+  const [width, setWidth] = useState(fallback);
+  useEffect(() => {
+    if (!ref.current) return;
+    const ro = new ResizeObserver(([entry]) => setWidth(Math.max(240, Math.floor(entry.contentRect.width))));
+    ro.observe(ref.current);
+    return () => ro.disconnect();
+  }, []);
+  return [ref, width];
+}
 
 // Status colours (fixed, never reused for anything else). Each is always
 // paired with a text label so meaning never relies on colour alone.
@@ -114,12 +128,16 @@ function tipAt(e, title, rows) {
 }
 
 function CampaignBars({ recent, setTip }) {
-  const rowH = 32, labelW = 118, barMax = 200, gap = 2;
+  const [ref, W] = useWidth();
+  const rowH = 32, gap = 2;
+  const labelW = Math.min(180, Math.round(W * 0.32));
+  const barMax = W - labelW - 44;
+  const maxChars = Math.floor((labelW - 12) / 7);
   const max = Math.max(1, ...recent.map((c) => c.sent + c.failed + c.skipped));
   const height = recent.length * rowH + 8;
 
   return (
-    <figure className="chart">
+    <figure className="chart" ref={ref}>
       <figcaption>
         <span className="chart-title">Results per campaign</span>
         <span className="legend">
@@ -128,7 +146,7 @@ function CampaignBars({ recent, setTip }) {
           ))}
         </span>
       </figcaption>
-      <svg viewBox={`0 0 ${labelW + barMax + 50} ${height}`} role="img"
+      <svg viewBox={`0 0 ${W} ${height}`} width={W} height={height} role="img"
         aria-label="Stacked bars of sent, failed and skipped emails for recent campaigns">
         {recent.map((c, i) => {
           const y = i * rowH + 6;
@@ -145,9 +163,9 @@ function CampaignBars({ recent, setTip }) {
             <g key={c.id} className="bar-row"
               onMouseMove={(e) => setTip(tipAt(e, c.name, rows))}
               onMouseLeave={() => setTip(null)}>
-              <rect x="0" y={y - 3} width={labelW + barMax + 50} height={rowH - 2} className="hit" />
+              <rect x="0" y={y - 3} width={W} height={rowH - 2} className="hit" />
               <text x={labelW - 10} y={y + 12} textAnchor="end" className="axis-label">
-                {c.name.length > 15 ? c.name.slice(0, 14) + "…" : c.name}
+                {c.name.length > maxChars ? c.name.slice(0, maxChars - 1) + "…" : c.name}
               </text>
               {segs.map((s, j) => (
                 <rect key={s.key} x={s.x} y={y} width={s.w} height={20} fill={s.color}
@@ -164,22 +182,23 @@ function CampaignBars({ recent, setTip }) {
 }
 
 function DailyColumns({ days, setTip }) {
-  const W = 360, H = 170, left = 28, bottom = 22, top = 18;
+  const [ref, W] = useWidth();
+  const H = 200, left = 28, bottom = 22, top = 18;
   const plotH = H - bottom - top;
   const max = Math.max(...days.map((d) => d.sent));
   const niceMax = max <= 4 ? 4 : Math.ceil(max / 4) * 4;
   const slot = (W - left) / days.length;
-  const barW = Math.min(16, slot - 6);
+  const barW = Math.max(4, Math.min(24, slot - 8));
   const ticks = [0, niceMax / 2, niceMax];
   const peak = max > 0 ? days.reduce((a, b) => (b.sent > a.sent ? b : a)) : null;
 
   return (
-    <figure className="chart">
+    <figure className="chart" ref={ref}>
       <figcaption>
         <span className="chart-title">Emails sent per day</span>
         <span className="muted small">last {DAYS} days</span>
       </figcaption>
-      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`Column chart of emails sent per day over the last ${DAYS} days`}>
+      <svg viewBox={`0 0 ${W} ${H}`} width={W} height={H} role="img" aria-label={`Column chart of emails sent per day over the last ${DAYS} days`}>
         {ticks.map((t) => {
           const y = top + plotH - (t / niceMax) * plotH;
           return (

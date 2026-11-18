@@ -19,6 +19,10 @@ npm run build
 echo "==> Uploading dashboard to s3://$SITE_BUCKET"
 # config.js is managed by Terraform (holds the API URL), so don't overwrite it.
 aws s3 sync dist/ "s3://$SITE_BUCKET/" --delete --exclude config.js
+# index.html must never be cached, or browsers keep loading the old app
+# after a redeploy (the hashed files in assets/ can be cached forever).
+aws s3 cp dist/index.html "s3://$SITE_BUCKET/index.html" \
+  --cache-control "no-cache" --content-type "text/html; charset=utf-8"
 
 echo
 echo "Done. Dashboard: $DASHBOARD_URL"

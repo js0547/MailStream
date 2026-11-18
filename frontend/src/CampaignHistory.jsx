@@ -14,7 +14,7 @@ function formatTime(iso) {
   return new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
-export default function CampaignHistory({ campaigns, loading, error, highlight, onRefresh }) {
+export default function CampaignHistory({ campaigns, loading, error, highlight, onRefresh, onNew }) {
   const [open, setOpen] = useState(null);
 
   useEffect(() => {
@@ -33,7 +33,8 @@ export default function CampaignHistory({ campaigns, loading, error, highlight, 
       {!loading && !error && campaigns.length === 0 && (
         <div className="empty">
           <strong>No campaigns yet</strong>
-          <span className="muted">Create one on the left and it will appear here with live progress.</span>
+          <span className="muted">Campaigns you send appear here with live progress.</span>
+          {onNew && <button type="button" className="ghost" onClick={onNew}>Create a campaign</button>}
         </div>
       )}
 

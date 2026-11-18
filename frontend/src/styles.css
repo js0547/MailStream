@@ -166,7 +166,7 @@ input:focus, select:focus, textarea:focus, .drop:focus { outline: 2px solid var(
 .attach-btn { align-self: flex-start; }
 
 /* Analytics */
-.analytics { margin-top: 16px; position: relative; }
+.analytics { position: relative; }
 .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
 .kpi { display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; border-radius: 10px; background: var(--surface-2); min-width: 0; }
 .kpi-value { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -178,7 +178,7 @@ input:focus, select:focus, textarea:focus, .drop:focus { outline: 2px solid var(
 .chart-title { font-size: 14px; font-weight: 600; text-align: left; caption-side: top; padding-bottom: 6px; }
 .legend { display: inline-flex; gap: 12px; font-size: 12px; color: var(--muted); }
 .legend > span { display: inline-flex; align-items: center; gap: 5px; }
-.chart svg { width: 100%; height: auto; display: block; overflow: visible; }
+.chart svg { display: block; overflow: visible; max-width: 100%; }
 .chart .hit { fill: transparent; }
 .chart .bar-row:hover .hit, .chart g:hover > .hit { fill: var(--surface-2); }
 .chart .axis-label { font-size: 12px; fill: var(--muted); }
@@ -200,3 +200,25 @@ input:focus, select:focus, textarea:focus, .drop:focus { outline: 2px solid var(
   .kpis { grid-template-columns: repeat(2, 1fr); }
   .charts, .table-views { grid-template-columns: 1fr; }
 }
+
+/* Tabs */
+.sender { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tabbar {
+  display: flex; gap: 4px; padding: 4px; margin-bottom: 20px; width: fit-content; max-width: 100%;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow-x: auto;
+}
+.tabbar-tab {
+  display: inline-flex; align-items: center; gap: 8px; white-space: nowrap;
+  padding: 8px 16px; border-radius: 9px; font-size: 14px; font-weight: 500;
+  color: var(--muted); text-decoration: none; transition: background .15s, color .15s;
+}
+.tabbar-tab:hover { color: var(--text); background: var(--surface-2); }
+.tabbar-tab.on { color: #fff; background: var(--accent); }
+@media (prefers-color-scheme: dark) { .tabbar-tab.on { color: #0f1117; } }
+.tabbar-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.count { font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 999px; background: var(--surface-2); color: var(--muted); }
+.tabbar-tab.on .count { background: rgba(255,255,255,.22); color: inherit; }
+.count-live { background: var(--info-soft); color: var(--info); }
+.panel { min-height: 50vh; }
+.narrow { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; }
+.empty .ghost { margin-top: 8px; }
